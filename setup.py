@@ -8,5 +8,6 @@ setup(
     description='Inspect IFEM result files',
     author='Eivind Fonn',
     author_email='eivind.fonn@sintef.no',
+    packages=['ifem'],
     scripts=['ifem-inspect'],
 )

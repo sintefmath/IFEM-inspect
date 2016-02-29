@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 
-import h5py
+from ifem import Result
+
 import argparse
 import sys
 import os
 import GeoMod as gm
 from operator import attrgetter
-from io import StringIO
 from itertools import groupby
 
 
 commands = {}
-
 
 def command(func):
     commands[func.__name__] = func
@@ -20,45 +19,58 @@ def command(func):
 
 @command
 def summary(f, args):
-    width = 50
+    width = 70
     left = width // 2 - 2
 
-    print('{fn: ^{w}}'.format(fn=f.filename, w=width))
+    left = max(len(b.name) for b in f.bases()) + 2
+    left = max(left, 15)
+
+    print('{fn: ^{w}}'.format(fn=f.filename.upper(), w=width))
     print('=' * width)
 
-    nlevels = len(f)
-
-    if nlevels == 0:
-        print('{name: >{w}}: 0'.format(name='Time levels', w=left))
-        return
-    assert '0' in f
-    assert str(nlevels - 1) in f
-    print('{name: >{w}}: {nlevels: >4} ({start:.2f}, ..., {end:.2f})'.format(
-        name='Time levels', w=left, nlevels=nlevels,
-        start=f['0']['timeinfo']['SIMbase-1'][0],
-        end=f[str(nlevels-1)]['timeinfo']['SIMbase-1'][0],
+    print('{name: >{w}}:  {nlevels} ({start:g}, ..., {end:g})'.format(
+        name='Timesteps', w=left, nlevels=f.ntimes - 1,
+        start=f.time(0).t, end=f.time(-1).t,
     ))
 
-    nbases = len(f['0']['basis'])
-    print('{name: >{w}}: {nbases: >4}'.format(name='Bases', w=left, nbases=nbases))
+    print('{name: >{w}}:  {dt:g}'.format(name='Delta-t', w=left, dt=f.dt))
 
-    for name, basis in f['0']['basis'].items():
-        g2data = basis['1'][:].tobytes().decode('utf-8')
-        patches = gm.SplineObject.read_g2(StringIO(g2data))
-        patches.sort(key=attrgetter('pardim'))
-        types = (t.__name__.lower() for t, _ in groupby(patches, key=type))
+    for b in f.bases():
+        order = {2: 'linear', 3: 'quadratic', 4: 'cubic', 5: 'quartic',
+                 6: 'quintic', 7: 'sextic', 8: 'septic', 9: 'octic'}[b.order]
 
-        print('{name: >{w}}: {npatches: >4} patch{pl} ({types})'.format(
-            name=name, w=left, npatches=len(patches),
-            pl='' if len(patches) == 1 else 'es',
-            types=', '.join(types)
+        print('{name: >{w}}:  {b.npatches} patch{pl}, {b.ncoefs} coefs ({type}; {order})'.format(
+            name=b.name, w=left, b=b, pl='' if b.npatches == 1 else 'es',
+            type=b.type.__name__.lower(), order=order
         ))
+
+        for fld in b.fields:
+            print('{title: >{w}}   - {f.name} ({f.type})'.format(title='', w=left, f=fld))
+
+
+@command
+def plot(f, args):
+    parser = argparse.ArgumentParser(prog='ifem-inspect plot')
+    parser.add_argument('field')
+    parser.add_argument('-t', '--time', type=float)
+    parser.add_argument('-l', '--level', type=int)
+    parser.add_argument('-p', '--patch', type=int, required=True)
+    parser.add_argument('-u', type=float)
+    parser.add_argument('-v', type=float)
+    parser.add_argument('-w', type=float)
+    args = parser.parse_args(args)
+
+    print(f.field(args.field).name)
 
 
 def parse_command(args):
     try:
-        default_file = next(f for f in os.scandir()
-                            if f.is_file() and f.name.endswith('.hdf5')).name
+        xml_files = {f.name.rsplit('.', 1)[0] for f in os.scandir()
+                     if f.is_file() and f.name.endswith('.xml')}
+        hdf_files = {f.name.rsplit('.', 1)[0] for f in os.scandir()
+                     if f.is_file() and f.name.endswith('.hdf5')}
+        candidates = xml_files & hdf_files
+        default_file = next(iter(candidates))
     except StopIteration:
         default_file = None
 
@@ -71,13 +83,24 @@ def parse_command(args):
     args = parser.parse_args(args)
 
     args.command = commands[args.command]
+
+    # If the file doesn't exist, use default and push the file as an arg instead
+    if default_file and not (os.path.isfile(args.file + '.hdf5') and
+                             os.path.isfile(args.file + '.xml')):
+        args.args = [args.file] + args.args
+        args.file = default_file
+
     return args
 
 
 def main():
     cmd = parse_command(sys.argv[1:])
 
-    with h5py.File(cmd.file, 'r') as f:
+    if not cmd.file:
+        print('Missing file')
+        sys.exit(1)
+
+    with Result(cmd.file) as f:
         cmd.command(f, cmd.args)
 
 
