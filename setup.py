@@ -9,7 +9,7 @@ setup(
     author='Eivind Fonn',
     author_email='eivind.fonn@sintef.no',
     license='GPL3',
-    url='https://github.com/sintefmath/IFEM-inspect'
+    url='https://github.com/sintefmath/IFEM-inspect',
     packages=['ifem'],
     scripts=['ifem-inspect'],
 )
