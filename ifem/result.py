@@ -1,13 +1,17 @@
 from io import StringIO
 from itertools import chain
-import h5py
 import xml.etree.ElementTree as xml
+
+import numpy as np
+import h5py
+
 from GeoMod import SplineObject
 
 
 class Time:
 
-    def __init__(self, group):
+    def __init__(self, level, group):
+        self.level = level
         self.group = group
 
     @property
@@ -50,10 +54,11 @@ class Basis:
 
 class Field:
 
-    def __init__(self, name, basis, components):
+    def __init__(self, name, basis, components, result):
         self.name = name
         self.basis = basis
         self.components = components
+        self.result = result
         basis.fields.append(self)
 
     @property
@@ -63,6 +68,20 @@ class Field:
         if self.components == self.basis.pardim:
             return 'vector'
         return '{}-dim'.format(self.components)
+
+    def patch(self, level, patchid):
+        patch = self.basis.patches[patchid - 1].clone()
+        patch.set_dimension(self.components)
+
+        coefs = self.result.hdf[str(level)][str(patchid)][self.name][:]
+        shape = [b.num_functions() for b in patch.bases[::-1]] + [self.components]
+        coefs = np.reshape(coefs, shape)
+
+        spec = tuple(list(range(patch.pardim))[::-1] + [patch.pardim])
+        coefs = coefs.transpose(spec)
+        patch.controlpoints = coefs
+
+        return patch
 
 
 class Result:
@@ -87,7 +106,7 @@ class Result:
                     name = child.attrib['name']
                     basis = self.basis(child.attrib['basis'])
                     components = int(child.attrib['components'])
-                    self.fields[name] = Field(name, basis, components)
+                    self.fields[name] = Field(name, basis, components, self)
 
         return self
 
@@ -97,7 +116,18 @@ class Result:
     def time(self, n):
         if n < 0:
             n += self.ntimes
-        return Time(self.hdf[str(n)])
+        return Time(n, self.hdf[str(n)])
+
+    def level(self, t):
+        closest = self.time(i)
+        diff = abs(t - closest.t)
+        for i in range(1, self.ntimes):
+            test_time = self.time(i)
+            test_diff = abs(t - test_time.t)
+            if test_diff < diff:
+                diff = test_diff
+                closest = test_time
+        return closest
 
     @property
     def nbases(self):
@@ -126,6 +156,10 @@ class Result:
             return basis
 
     def field(self, name):
+        candidates = set()
         for k, f in self.fields.items():
             if f.name.lower().startswith(name.lower()):
-                return f
+                candidates.add(f)
+        if len(candidates) == 1:
+            return next(iter(candidates))
+        raise KeyError

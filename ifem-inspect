@@ -5,9 +5,13 @@ from ifem import Result
 import argparse
 import sys
 import os
-import GeoMod as gm
 from operator import attrgetter
 from itertools import groupby
+
+import numpy as np
+import pylab
+
+import GeoMod as gm
 
 
 commands = {}
@@ -52,15 +56,50 @@ def summary(f, args):
 def plot(f, args):
     parser = argparse.ArgumentParser(prog='ifem-inspect plot')
     parser.add_argument('field')
-    parser.add_argument('-t', '--time', type=float)
-    parser.add_argument('-l', '--level', type=int)
-    parser.add_argument('-p', '--patch', type=int, required=True)
+    parser.add_argument('-p', '--patch', type=int)
+    parser.add_argument('-t', '--time', type=float, nargs='+')
+    parser.add_argument('-l', '--level', type=int, nargs='+')
     parser.add_argument('-u', type=float)
     parser.add_argument('-v', type=float)
     parser.add_argument('-w', type=float)
+    parser.add_argument('-N', type=int, default=101)
+    parser.add_argument('--ymin', type=float)
+    parser.add_argument('--ymax', type=float)
+    parser.add_argument('--xmin', type=float)
+    parser.add_argument('--xmax', type=float)
     args = parser.parse_args(args)
 
-    print(f.field(args.field).name)
+    args.field = f.field(args.field)
+    if args.patch is None and field.basis.npatches == 1:
+        args.patch = 1
+    if args.time is not None and args.level is None:
+        args.level = [f.level(t) for t in args.time]
+    elif args.level is not None:
+        args.level = [f.time(l) for l in args.level]
+    else:
+        args.level = [f.time(l) for l in range(f.ntimes)]
+
+    patches = [args.field.patch(l.level, args.patch) for l in args.level]
+
+    params = [args.u, args.v, args.w][:patches[0].pardim]
+    variable = params.index(None)
+    params[variable] = list(np.linspace(patches[0].start(variable),
+                                        patches[0].end(variable), args.N))
+    values = [p(*params).flat for p in patches]
+
+    for v in values:
+        pylab.plot(params[variable], v)
+
+    if args.ymin is not None:
+        pylab.ylim(ymin=args.ymin)
+    if args.ymax is not None:
+        pylab.ylim(ymax=args.ymax)
+    if args.xmin is not None:
+        pylab.xlim(xmin=args.xmin)
+    if args.xmax is not None:
+        pylab.xlim(xmax=args.xmax)
+
+    pylab.show()
 
 
 def parse_command(args):
@@ -79,7 +118,7 @@ def parse_command(args):
     )
     parser.add_argument('command', choices=commands, default='summary', nargs='?')
     parser.add_argument('file', default=default_file, nargs='?')
-    parser.add_argument('args', nargs='*')
+    parser.add_argument('args', nargs=argparse.REMAINDER)
     args = parser.parse_args(args)
 
     args.command = commands[args.command]
