@@ -6,7 +6,7 @@ import argparse
 import sys
 import os
 from operator import attrgetter
-from itertools import groupby
+from itertools import groupby, cycle
 
 import numpy as np
 import pylab
@@ -14,92 +14,318 @@ import pylab
 import GeoMod as gm
 
 
-commands = {}
+class Command:
+    cmd_needs_file = True
 
-def command(func):
-    commands[func.__name__] = func
-    return func
+    def __init__(self, res=None):
+        assert res or not self.cmd_needs_file
+        self.res = res
+
+    @classmethod
+    def make_basic_parser(cls):
+        return argparse.ArgumentParser(
+            prog='ifem-inspect {}'.format(cls.__name__.lower()),
+            description=cls.__doc__,
+            add_help=False,
+        )
+
+    @classmethod
+    def make_parser(cls):
+        return cls.make_basic_parser()
+
+    def parse(self, args, print_help=False):
+        parser = self.__class__.make_parser()
+        if print_help:
+            parser.print_help()
+            return
+        self.args = parser.parse_args(args)
+
+    def run(self):
+        raise NotImplementedError()
 
 
-@command
-def summary(f, args):
-    width = 70
-    left = width // 2 - 2
+class Help(Command):
+    """Show help about a specific command"""
+    cmd_needs_file = False
 
-    left = max(len(b.name) for b in f.bases()) + 2
-    left = max(left, 15)
+    usage = """Usage: ifem-inspect [command] [file] args...
 
-    print('{fn: ^{w}}'.format(fn=f.filename.upper(), w=width))
-    print('=' * width)
+FILE: The basename (without extension) of an IFEM result file.
+      May be omitted if there is only one candidate in the
+      current directory.
 
-    print('{name: >{w}}:  {nlevels} ({start:g}, ..., {end:g})'.format(
-        name='Timesteps', w=left, nlevels=f.ntimes - 1,
-        start=f.time(0).t, end=f.time(-1).t,
-    ))
+The following commands are available. For help on the specific
+arguments to each one, use
 
-    print('{name: >{w}}:  {dt:g}'.format(name='Delta-t', w=left, dt=f.dt))
+      ifem-inspect help <command>
+"""
 
-    for b in f.bases():
-        order = {2: 'linear', 3: 'quadratic', 4: 'cubic', 5: 'quartic',
-                 6: 'quintic', 7: 'sextic', 8: 'septic', 9: 'octic'}[b.order]
+    @classmethod
+    def make_parser(cls):
+        parser = cls.make_basic_parser()
 
-        print('{name: >{w}}:  {b.npatches} patch{pl}, {b.ncoefs} coefs ({type}; {order})'.format(
-            name=b.name, w=left, b=b, pl='' if b.npatches == 1 else 'es',
-            type=b.type.__name__.lower(), order=order
+        commands = {cmd.__name__.lower(): cmd for cmd in Command.__subclasses__()}
+        parser.add_argument(
+            'command', default=None, choices=commands, nargs='?',
+            metavar='command', help='The command to show help for'
+        )
+
+        return parser
+
+    def run(self):
+        command = self.args.command
+
+        if not command:
+            print(self.usage)
+            for cmd in Command.__subclasses__():
+                print('  {: <10}  {}'.format(cmd.__name__.lower(), cmd.__doc__))
+
+        else:
+            command_obj = next(c for c in Command.__subclasses__()
+                               if c.__name__.lower() == command)
+            command_obj.make_parser().print_help()
+
+
+class Summary(Command):
+    """Show a brief summary of a result file"""
+
+    def run(self):
+        res = self.res
+
+        width = 70
+        left = max(len(b.name) for b in res.bases()) + 2
+        left = max(left, 15)
+
+        print('{fn: ^{w}}'.format(fn=res.filename.upper(), w=width))
+        print('=' * width)
+
+        print('{name: >{w}}:  {nlevels} ({start:g}, ..., {end:g})'.format(
+            name='Timesteps', w=left, nlevels=res.ntimes - 1,
+            start=res.time(0).t, end=res.time(-1).t,
         ))
 
-        for fld in b.fields:
-            print('{title: >{w}}   - {f.name} ({f.type})'.format(title='', w=left, f=fld))
+        print('{name: >{w}}:  {dt:g}'.format(name='Delta-t', w=left, dt=res.dt))
+
+        for b in res.bases():
+            order = {2: 'linear', 3: 'quadratic', 4: 'cubic', 5: 'quartic',
+                     6: 'quintic', 7: 'sextic', 8: 'septic', 9: 'octic'}[b.order]
+
+            print('{name: >{w}}:  {b.npatches} patch{pl}, {b.ncoefs} coefs ({type}; {order})'
+                  .format(
+                      name=b.name, w=left, b=b, pl='' if b.npatches == 1 else 'es',
+                      type=b.type.__name__.lower(), order=order
+                  ))
+
+            for fld in b.fields:
+                print('{title: >{w}}   - {f.name} ({f.type})'.format(title='', w=left, f=fld))
 
 
-@command
-def plot(f, args):
-    parser = argparse.ArgumentParser(prog='ifem-inspect plot')
-    parser.add_argument('field')
-    parser.add_argument('-p', '--patch', type=int)
-    parser.add_argument('-t', '--time', type=float, nargs='+')
-    parser.add_argument('-l', '--level', type=int, nargs='+')
-    parser.add_argument('-u', type=float)
-    parser.add_argument('-v', type=float)
-    parser.add_argument('-w', type=float)
-    parser.add_argument('-N', type=int, default=101)
-    parser.add_argument('--ymin', type=float)
-    parser.add_argument('--ymax', type=float)
-    parser.add_argument('--xmin', type=float)
-    parser.add_argument('--xmax', type=float)
-    args = parser.parse_args(args)
+def partial_squeeze(array):
+    """Squeezes all singleton directions except possibly the last."""
+    axes = tuple(i for i in range(len(array.shape) - 1) if array.shape[i] == 1)
+    return np.squeeze(array, axis=axes)
 
-    args.field = f.field(args.field)
-    if args.patch is None and field.basis.npatches == 1:
-        args.patch = 1
-    if args.time is not None and args.level is None:
-        args.level = [f.level(t) for t in args.time]
-    elif args.level is not None:
-        args.level = [f.time(l) for l in args.level]
-    else:
-        args.level = [f.time(l) for l in range(f.ntimes)]
 
-    patches = [args.field.patch(l.level, args.patch) for l in args.level]
+class Plot(Command):
+    """Create a simple line plot of results."""
 
-    params = [args.u, args.v, args.w][:patches[0].pardim]
-    variable = params.index(None)
-    params[variable] = list(np.linspace(patches[0].start(variable),
-                                        patches[0].end(variable), args.N))
-    values = [p(*params).flat for p in patches]
+    @classmethod
+    def make_parser(cls):
+        parser = cls.make_basic_parser()
+        parser.add_argument('field', help='The field to plot')
+        parser.add_argument(
+            '-p', '--patch', type=int, nargs='*', metavar='N',
+            help='The patch ID(s) to plot'
+        )
+        parser.add_argument(
+            '-t', '--time', type=float, nargs='+', metavar='T',
+            help='The time(s) to plot at'
+        )
+        parser.add_argument(
+            '-l', '--level', type=int, nargs='+', metavar='N',
+            help='The time level(s) to plot at'
+        )
+        parser.add_argument(
+            '-s', '--stride', type=int, default=1, metavar='S',
+            help='The time stride to use'
+        )
+        for d in 'uvw':
+            parser.add_argument(
+                '-' + d, type=str, nargs='*', metavar=d.upper(),
+                help='The parameter values of {} (or * for variable)'.format(d)
+            )
+        parser.add_argument(
+            '-N', type=int, default=101, help='The number of points for each patch'
+        )
+        parser.add_argument(
+            '-H', type=str, default='var', choices=['var', 'x', 'y', 'z'],
+            help='What to use for the horizontal axis'
+        )
+        parser.add_argument(
+            '--interpret', type=str, default='0',
+            help='Processing to apply to the field data'
+        )
+        parser.add_argument(
+            '--color', type=str, nargs='+', default=list('bgrcmk'),
+            help='The colors to cycle through'
+        )
+        parser.add_argument('--xmin', type=float, help='Lower bound in x')
+        parser.add_argument('--xmax', type=float, help='Upper bound in x')
+        parser.add_argument('--ymin', type=float, help='Lower bound in y')
+        parser.add_argument('--ymax', type=float, help='Upper bound in y')
+        return parser
 
-    for v in values:
-        pylab.plot(params[variable], v)
+    def _levels(self):
+        """Return the list of time level objects under consideration."""
+        args, res = self.args, self.res
+        if args.time is not None and args.level is None:
+            levels = [res.level(t) for t in args.time]
+        elif args.level is not None:
+            levels = [res.time(l) for l in args.level]
+        else:
+            levels = [res.time(l) for l in range(0, res.ntimes, args.stride)]
+        return levels
 
-    if args.ymin is not None:
-        pylab.ylim(ymin=args.ymin)
-    if args.ymax is not None:
-        pylab.ylim(ymax=args.ymax)
-    if args.xmin is not None:
-        pylab.xlim(xmin=args.xmin)
-    if args.xmax is not None:
-        pylab.xlim(xmax=args.xmax)
+    def _handle_uvw(self, geometries):
+        """Handle the u, v and w parameters.
 
-    pylab.show()
+        Return:
+        - Parameter specs for evaluation
+        - Corresponding physical points
+        - Horizontal axis values for plotting
+        """
+        args = self.args
+        parameters, physical_pts, horizontal = [], [], []
+        required = self._required_geometry_derivatives()
+
+        for i, geometry in enumerate(geometries):
+            spec = []
+            for d in 'uvw':
+                try:
+                    attr = getattr(args, d)[i]
+                    spec.append(None if attr == '*' else float(attr))
+                except (IndexError, TypeError):
+                    spec.append(None)
+            spec = spec[:geometry.pardim]
+
+            vardir = spec.index(None)
+            spec[vardir] = list(np.linspace(geometry.start(vardir),
+                                            geometry.end(vardir), args.N))
+            parameters.append(spec)
+            physical_pts.append(self._evaluate(geometry, spec, required))
+
+            if args.H in 'xyz':
+                d = 'xyz'.index(args.H)
+                horizontal.append(physical_pts[-1][0][:,d])
+            elif args.H == 'var':
+                try:
+                    start = horizontal[-1][-1]
+                except IndexError:
+                    start = 0.0
+                horizontal.append([t + start for t in spec[vardir]])
+
+        return parameters, physical_pts, horizontal
+
+    def _interpret(self, val, phys):
+        """Interprets a single result field"""
+        interpret = self.args.interpret
+        if not interpret:
+            return val[0]
+
+        # Single component
+        if interpret.isnumeric():
+            return val[0][:, int(interpret) - 1]
+
+        # Physical coordinates
+        if interpret in 'xyz':
+            return phys[0][:, 'xyz'.index(interpret)]
+
+        # Single derivatives
+        # if interpret[0] == 'd':
+        #     component, direction = interpret[1:].split('_')
+        #     component = int(component) - 1
+
+        #     d_wrt_p = np.stack((v[:, component] for v in val[1]), axis=1)
+        #     if direction in 'uvw':
+        #         return d_wrt_p[:, 'uvw'.index(direction)]
+
+        #     jacobians = np.stack(phys[1], axis=2)
+        #     print(d_wrt_p)
+        #     print(jacobians)
+        #     d_wrt_y = np.einsum('ijk,ik->ij', jacobians, d_wrt_p)
+        #     if direction in 'xyz':
+        #         return d_wrt_y[:, 'xyz'.index(direction)]
+
+        # return val[0]
+
+    def _evaluate(self, patch, spec, required):
+        ret = {}
+        if required >= 0:
+            ret[0] = partial_squeeze(patch(*spec))
+        if required >= 1:
+            ret[1] = tuple(partial_squeeze(d) for d in patch.tangent(*spec))
+        return ret
+
+    def _required_geometry_derivatives(self):
+        ret = -1
+
+        if self.args.H in 'xyz':
+            ret = max(ret, 0)
+        if self.args.interpret:
+            if self.args.interpret in 'xyz':
+                ret = max(ret, 0)
+            if self.args.interpret[0] == 'd':
+                ret = max(ret, 1)
+
+        return ret
+
+    def _required_field_derivatives(self):
+        ret = 0
+
+        if self.args.interpret:
+            if self.args.interpret[0] == 'd':
+                ret = max(ret, 1)
+
+        return ret
+
+    def run(self):
+        args = self.args
+        res = self.res
+
+        # Get the field we're interested in
+        field = res.field(args.field)
+        levels = self._levels()
+
+        # Get the patch IDs we're interested in
+        patches = args.patch
+        if patches is None and field.basis.npatches == 1:
+            patches = [1]
+        assert patches is not None
+
+        # Get the geometry and parse the parameters
+        # Also evaluate the physical points we're after, and the horizontal axis
+        geometries = [field.geometry(p) for p in patches]
+        parameters, physical_pts, horizontal = self._handle_uvw(geometries)
+
+        # Plot
+        required = self._required_field_derivatives()
+        for color, level in zip(cycle(args.color), levels):
+            for pid, spec, phys, h in zip(patches, parameters, physical_pts, horizontal):
+                values = self._evaluate(field.patch(level.level, pid), spec, required)
+                values = self._interpret(values, phys)
+                pylab.plot(h, values, color=color)
+
+        # Adjust view
+        if args.ymin is not None:
+            pylab.ylim(ymin=args.ymin)
+        if args.ymax is not None:
+            pylab.ylim(ymax=args.ymax)
+        if args.xmin is not None:
+            pylab.xlim(xmin=args.xmin)
+        if args.xmax is not None:
+            pylab.xlim(xmax=args.xmax)
+
+        pylab.show()
 
 
 def parse_command(args):
@@ -113,17 +339,21 @@ def parse_command(args):
     except StopIteration:
         default_file = None
 
+    commands = {cmd.__name__.lower(): cmd for cmd in Command.__subclasses__()}
+
     parser = argparse.ArgumentParser(
-        description='Inspect an IFEM result file.'
+        description='Inspect an IFEM result file.',
+        add_help=False,
     )
-    parser.add_argument('command', choices=commands, default='summary', nargs='?')
+    parser.add_argument('command', choices=commands, default='help', nargs='?')
     parser.add_argument('file', default=default_file, nargs='?')
     parser.add_argument('args', nargs=argparse.REMAINDER)
     args = parser.parse_args(args)
 
     args.command = commands[args.command]
 
-    # If the file doesn't exist, use default and push the file as an arg instead
+    # If the file doesn't exist, it's probably because it's the first argument
+    # for the command instead. Use the default file if it exists, then.
     if default_file and not (os.path.isfile(args.file + '.hdf5') and
                              os.path.isfile(args.file + '.xml')):
         args.args = [args.file] + args.args
@@ -133,14 +363,17 @@ def parse_command(args):
 
 
 def main():
-    cmd = parse_command(sys.argv[1:])
+    args = parse_command(sys.argv[1:])
 
-    if not cmd.file:
-        print('Missing file')
-        sys.exit(1)
-
-    with Result(cmd.file) as f:
-        cmd.command(f, cmd.args)
+    if args.command.cmd_needs_file:
+        with Result(args.file) as res:
+            cmd = args.command(res)
+            cmd.parse(args.args)
+            cmd.run()
+    else:
+        cmd = args.command()
+        cmd.parse(args.args)
+        cmd.run()
 
 
 if __name__ == '__main__':

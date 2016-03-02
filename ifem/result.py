@@ -69,6 +69,9 @@ class Field:
             return 'vector'
         return '{}-dim'.format(self.components)
 
+    def geometry(self, patchid):
+        return self.basis.patches[patchid - 1].clone()
+
     def patch(self, level, patchid):
         patch = self.basis.patches[patchid - 1].clone()
         patch.set_dimension(self.components)
