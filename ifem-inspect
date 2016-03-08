@@ -76,7 +76,6 @@ arguments to each one, use
             print(self.usage)
             for cmd in Command.__subclasses__():
                 print('  {: <12}{}'.format(cmd.__name__.lower(), cmd.__doc__))
-
         else:
             command_obj = next(c for c in Command.__subclasses__()
                                if c.__name__.lower() == command)
@@ -158,10 +157,16 @@ class Plot(Command):
             '-H', type=str, default='var', choices=['var', 'x', 'y', 'z'],
             help='What to use for the horizontal axis'
         )
+
+        # Interpreting
         parser.add_argument(
             '--interpret', type=str, default='0',
             help='Processing to apply to the field data'
         )
+        parser.add_argument('--ymod', type=float, default=1.0, help="Young's modulus")
+        parser.add_argument('--prat', type=float, default=0.25, help="Poisson's ratio")
+
+        # Plotting
         parser.add_argument(
             '--color', type=str, nargs='+', default=list('bgrcmk'),
             help='The colors to cycle through'
@@ -223,9 +228,11 @@ class Plot(Command):
 
         return parameters, physical_pts, horizontal
 
-    def _interpret(self, val, phys):
+    def _interpret(self, val, phys, interpret=None):
         """Interprets a single result field"""
-        interpret = self.args.interpret
+        if interpret is None:
+            interpret = self.args.interpret
+
         if not interpret:
             return val[0]
 
@@ -238,22 +245,46 @@ class Plot(Command):
             return phys[0][:, 'xyz'.index(interpret)]
 
         # Single derivatives
-        # if interpret[0] == 'd':
-        #     component, direction = interpret[1:].split('_')
-        #     component = int(component) - 1
+        if interpret.startswith('d'):
+            component, direction = interpret[1:].split('_')
+            component = int(component) - 1
 
-        #     d_wrt_p = np.stack((v[:, component] for v in val[1]), axis=1)
-        #     if direction in 'uvw':
-        #         return d_wrt_p[:, 'uvw'.index(direction)]
+            d_wrt_par = np.stack((v[:, component] for v in val[1]), axis=1)
+            if direction in 'uvw':
+                return d_wrt_par[:, 'uvw'.index(direction)]
 
-        #     jacobians = np.stack(phys[1], axis=2)
-        #     print(d_wrt_p)
-        #     print(jacobians)
-        #     d_wrt_y = np.einsum('ijk,ik->ij', jacobians, d_wrt_p)
-        #     if direction in 'xyz':
-        #         return d_wrt_y[:, 'xyz'.index(direction)]
+            jacobians = np.transpose(np.stack(phys[1], axis=2), axes=(0, 2, 1))
+            jacobians = jacobians[..., :d_wrt_par.shape[1]]
+            d_wrt_phys = np.linalg.solve(jacobians, d_wrt_par)
+            return d_wrt_phys[:, 'xyz'.index(direction)]
 
-        # return val[0]
+        # Strain
+        if interpret.startswith('strain'):
+            first, second = interpret.split('_')[1]
+
+            dfs = self._interpret(val, phys, 'd{}_{}'.format('xyz'.index(first) + 1, second))
+            if first == second:
+                return dfs
+
+            dsf = self._interpret(val, phys, 'd{}_{}'.format('xyz'.index(second) + 1, first))
+            return (dfs + dsf) / 2
+
+        # Stress
+        if interpret.startswith('stress'):
+            first, second = interpret.split('_')[1]
+
+            nu = self.args.prat
+            pre = self.args.ymod / (1 + nu) / (1 - 2*nu)
+
+            if first != second:
+                stress = self._interpret(val, phys, 'strain_{}{}'.format(first, second))
+                return pre * (1 - 2 * self.args.prat) * stress
+
+            ret = (1 - nu) * self._interpret(val, phys, 'strain_{a}{a}'.format(a=first))
+            directions = 'xyz'[:val[0].shape[1]]
+            for direction in set(directions) - set(first):
+                ret += self.args.prat * self._interpret(val, phys, 'strain_{a}{a}'.format(a=direction))
+            return pre * ret
 
     def _evaluate(self, patch, spec, required):
         ret = {}
@@ -271,7 +302,11 @@ class Plot(Command):
         if self.args.interpret:
             if self.args.interpret in 'xyz':
                 ret = max(ret, 0)
-            if self.args.interpret[0] == 'd':
+            if self.args.interpret.startswith('d'):
+                ret = max(ret, 1)
+            if self.args.interpret.startswith('strain'):
+                ret = max(ret, 1)
+            if self.args.interpret.startswith('stress'):
                 ret = max(ret, 1)
 
         return ret
@@ -280,7 +315,11 @@ class Plot(Command):
         ret = 0
 
         if self.args.interpret:
-            if self.args.interpret[0] == 'd':
+            if self.args.interpret.startswith('d'):
+                ret = max(ret, 1)
+            if self.args.interpret.startswith('strain'):
+                ret = max(ret, 1)
+            if self.args.interpret.startswith('stress'):
                 ret = max(ret, 1)
 
         return ret

@@ -1,11 +1,12 @@
 from io import StringIO
 from itertools import chain
+import tempfile
 import xml.etree.ElementTree as xml
 
 import numpy as np
 import h5py
 
-from GeoMod import SplineObject
+from splipy.io import G2Object
 
 
 class Time:
@@ -28,8 +29,9 @@ class Basis:
 
         self.patches = []
         for i in range(1, self.npatches + 1):
-            g2data = group[str(i)][:].tobytes().decode('utf-8')
-            self.patches.append(SplineObject.read_g2(StringIO(g2data))[0])
+            g2data = StringIO(group[str(i)][:].tobytes().decode('utf-8'))
+            with G2Object(g2data) as g:
+                self.patches.append(g.read()[0])
 
     @property
     def npatches(self):
