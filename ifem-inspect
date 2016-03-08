@@ -175,6 +175,8 @@ class Plot(Command):
         parser.add_argument('--xmax', type=float, help='Upper bound in x')
         parser.add_argument('--ymin', type=float, help='Lower bound in y')
         parser.add_argument('--ymax', type=float, help='Upper bound in y')
+        parser.add_argument('--save', help='The filename to save to')
+        parser.add_argument('--title', help='Plot title')
         return parser
 
     def _levels(self):
@@ -361,7 +363,13 @@ class Plot(Command):
         if args.xmax is not None:
             pylab.xlim(xmax=args.xmax)
 
-        pylab.show()
+        if args.title:
+            pylab.title(args.title)
+
+        if args.save:
+            pylab.savefig(args.save)
+        else:
+            pylab.show()
 
 
 def parse_command(args):
