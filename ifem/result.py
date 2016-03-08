@@ -6,7 +6,18 @@ import xml.etree.ElementTree as xml
 import numpy as np
 import h5py
 
-from splipy.io import G2Object
+from splipy.io import G2
+
+
+class G2Object(G2):
+
+    def __init__(self, fstream):
+        self.fstream = fstream
+        super(G2Object, self).__init__('')
+
+    def __enter__(self):
+        self.onlywrite = False
+        return self
 
 
 class Time:
