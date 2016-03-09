@@ -119,10 +119,111 @@ class Summary(Command):
 def partial_squeeze(array):
     """Squeezes all singleton directions except possibly the last."""
     axes = tuple(i for i in range(len(array.shape) - 1) if array.shape[i] == 1)
-    return np.squeeze(array, axis=axes)
+    array = np.squeeze(array, axis=axes)
+    if len(array.shape) == 1:
+        array = np.array([array])
+    return array
 
 
-class Plot(Command):
+class Evaluator:
+    """Meta-command that can evaluate things"""
+
+    def _interpret(self, val, phys, interpret=None):
+        """Interprets a single result field"""
+        if interpret is None:
+            interpret = self.args.interpret
+
+        if not interpret:
+            return val[0]
+
+        # Single component
+        if interpret.isnumeric():
+            return val[0][..., int(interpret) - 1]
+
+        # Physical coordinates
+        if interpret in 'xyz':
+            return phys[0][:, 'xyz'.index(interpret)]
+
+        # Single derivatives
+        if interpret.startswith('d'):
+            component, direction = interpret[1:].split('_')
+            component = int(component) - 1
+
+            d_wrt_par = np.stack((v[:, component] for v in val[1]), axis=1)
+            if direction in 'uvw':
+                return d_wrt_par[:, 'uvw'.index(direction)]
+
+            jacobians = np.transpose(np.stack(phys[1], axis=2), axes=(0, 2, 1))
+            jacobians = jacobians[..., :d_wrt_par.shape[1]]
+            d_wrt_phys = np.linalg.solve(jacobians, d_wrt_par)
+            return d_wrt_phys[:, 'xyz'.index(direction)]
+
+        # Strain
+        if interpret.startswith('strain'):
+            first, second = interpret.split('_')[1]
+
+            dfs = self._interpret(val, phys, 'd{}_{}'.format('xyz'.index(first) + 1, second))
+            if first == second:
+                return dfs
+
+            dsf = self._interpret(val, phys, 'd{}_{}'.format('xyz'.index(second) + 1, first))
+            return (dfs + dsf) / 2
+
+        # Stress
+        if interpret.startswith('stress'):
+            first, second = interpret.split('_')[1]
+
+            nu = self.args.prat
+            pre = self.args.ymod / (1 + nu) / (1 - 2*nu)
+
+            if first != second:
+                stress = self._interpret(val, phys, 'strain_{}{}'.format(first, second))
+                return pre * (1 - 2 * self.args.prat) * stress
+
+            ret = (1 - nu) * self._interpret(val, phys, 'strain_{a}{a}'.format(a=first))
+            directions = 'xyz'[:val[0].shape[1]]
+            for direction in set(directions) - set(first):
+                ret += self.args.prat * self._interpret(val, phys, 'strain_{a}{a}'.format(a=direction))
+            return pre * ret
+
+    def _evaluate(self, patch, spec, required):
+        ret = {}
+        if required >= 0:
+            ret[0] = partial_squeeze(patch(*spec))
+        if required >= 1:
+            ret[1] = tuple(partial_squeeze(d) for d in patch.tangent(*spec))
+        return ret
+
+    def _required_geometry_derivatives(self, interpret):
+        ret = -1
+
+        if interpret:
+            if interpret in 'xyz':
+                ret = max(ret, 0)
+            if interpret.startswith('d'):
+                ret = max(ret, 1)
+            if interpret.startswith('strain'):
+                ret = max(ret, 1)
+            if interpret.startswith('stress'):
+                ret = max(ret, 1)
+
+        return ret
+
+    def _required_field_derivatives(self, interpret):
+        ret = 0
+
+        if interpret:
+            if interpret.startswith('d'):
+                ret = max(ret, 1)
+            if interpret.startswith('strain'):
+                ret = max(ret, 1)
+            if interpret.startswith('stress'):
+                ret = max(ret, 1)
+
+        return ret
+
+
+class Plot(Command, Evaluator):
     """Create a simple line plot of results"""
 
     @classmethod
@@ -148,7 +249,7 @@ class Plot(Command):
         for d in 'uvw':
             parser.add_argument(
                 '-' + d, type=str, nargs='*', metavar=d.upper(),
-                help='The parameter values of {} (or * for variable)'.format(d)
+                help='The parameter values of {} (or : for variable)'.format(d)
             )
         parser.add_argument(
             '-N', type=int, default=101, help='The number of points for each patch'
@@ -207,7 +308,7 @@ class Plot(Command):
             for d in 'uvw':
                 try:
                     attr = getattr(args, d)[i]
-                    spec.append(None if attr == '*' else float(attr))
+                    spec.append(None if attr == ':' else float(attr))
                 except (IndexError, TypeError):
                     spec.append(None)
             spec = spec[:geometry.pardim]
@@ -230,101 +331,18 @@ class Plot(Command):
 
         return parameters, physical_pts, horizontal
 
-    def _interpret(self, val, phys, interpret=None):
-        """Interprets a single result field"""
-        if interpret is None:
-            interpret = self.args.interpret
-
-        if not interpret:
-            return val[0]
-
-        # Single component
-        if interpret.isnumeric():
-            return val[0][:, int(interpret) - 1]
-
-        # Physical coordinates
-        if interpret in 'xyz':
-            return phys[0][:, 'xyz'.index(interpret)]
-
-        # Single derivatives
-        if interpret.startswith('d'):
-            component, direction = interpret[1:].split('_')
-            component = int(component) - 1
-
-            d_wrt_par = np.stack((v[:, component] for v in val[1]), axis=1)
-            if direction in 'uvw':
-                return d_wrt_par[:, 'uvw'.index(direction)]
-
-            jacobians = np.transpose(np.stack(phys[1], axis=2), axes=(0, 2, 1))
-            jacobians = jacobians[..., :d_wrt_par.shape[1]]
-            d_wrt_phys = np.linalg.solve(jacobians, d_wrt_par)
-            return d_wrt_phys[:, 'xyz'.index(direction)]
-
-        # Strain
-        if interpret.startswith('strain'):
-            first, second = interpret.split('_')[1]
-
-            dfs = self._interpret(val, phys, 'd{}_{}'.format('xyz'.index(first) + 1, second))
-            if first == second:
-                return dfs
-
-            dsf = self._interpret(val, phys, 'd{}_{}'.format('xyz'.index(second) + 1, first))
-            return (dfs + dsf) / 2
-
-        # Stress
-        if interpret.startswith('stress'):
-            first, second = interpret.split('_')[1]
-
-            nu = self.args.prat
-            pre = self.args.ymod / (1 + nu) / (1 - 2*nu)
-
-            if first != second:
-                stress = self._interpret(val, phys, 'strain_{}{}'.format(first, second))
-                return pre * (1 - 2 * self.args.prat) * stress
-
-            ret = (1 - nu) * self._interpret(val, phys, 'strain_{a}{a}'.format(a=first))
-            directions = 'xyz'[:val[0].shape[1]]
-            for direction in set(directions) - set(first):
-                ret += self.args.prat * self._interpret(val, phys, 'strain_{a}{a}'.format(a=direction))
-            return pre * ret
-
-    def _evaluate(self, patch, spec, required):
-        ret = {}
-        if required >= 0:
-            ret[0] = partial_squeeze(patch(*spec))
-        if required >= 1:
-            ret[1] = tuple(partial_squeeze(d) for d in patch.tangent(*spec))
-        return ret
-
     def _required_geometry_derivatives(self):
         ret = -1
 
         if self.args.H in 'xyz':
             ret = max(ret, 0)
-        if self.args.interpret:
-            if self.args.interpret in 'xyz':
-                ret = max(ret, 0)
-            if self.args.interpret.startswith('d'):
-                ret = max(ret, 1)
-            if self.args.interpret.startswith('strain'):
-                ret = max(ret, 1)
-            if self.args.interpret.startswith('stress'):
-                ret = max(ret, 1)
+
+        ret = max(ret, super(Plot, self)._required_geometry_derivatives(self.args.interpret))
 
         return ret
 
     def _required_field_derivatives(self):
-        ret = 0
-
-        if self.args.interpret:
-            if self.args.interpret.startswith('d'):
-                ret = max(ret, 1)
-            if self.args.interpret.startswith('strain'):
-                ret = max(ret, 1)
-            if self.args.interpret.startswith('stress'):
-                ret = max(ret, 1)
-
-        return ret
+        return super(Plot, self)._required_field_derivatives(self.args.interpret)
 
     def run(self):
         args = self.args
@@ -370,6 +388,115 @@ class Plot(Command):
             pylab.savefig(args.save)
         else:
             pylab.show()
+
+
+class Eval(Command, Evaluator):
+
+    @classmethod
+    def make_parser(cls):
+        parser = cls.make_basic_parser()
+        parser.add_argument('field', help='The field to evaluate')
+        parser.add_argument(
+            '-p', '--patch', type=int, nargs='*', metavar='N',
+            help='The patch ID(s) to evaluate'
+        )
+        parser.add_argument(
+            '-t', '--time', type=float, nargs='+', metavar='T',
+            help='The time(s) to evaluate at'
+        )
+        parser.add_argument(
+            '-l', '--level', type=int, nargs='+', metavar='N',
+            help='The time level(s) to plot at'
+        )
+        parser.add_argument(
+            '-s', '--stride', type=int, default=1, metavar='S',
+            help='The time stride to use'
+        )
+        for d in 'uvw':
+            parser.add_argument(
+                '-' + d, type=float, nargs='*', metavar=d.upper(),
+                help='The parameter values of {}'.format(d)
+            )
+
+        # Interpreting
+        parser.add_argument(
+            '--interpret', type=str, default='0',
+            help='Processing to apply to the field data'
+        )
+        parser.add_argument('--ymod', type=float, default=1.0, help="Young's modulus")
+        parser.add_argument('--prat', type=float, default=0.25, help="Poisson's ratio")
+
+        # Output
+        parser.add_argument(
+            '--bare', action='store_true', default=False,
+            help='Machine-readable output'
+        )
+
+        return parser
+
+    def _levels(self):
+        """Return the list of time level objects under consideration."""
+        args, res = self.args, self.res
+        if args.time is not None and args.level is None:
+            levels = [res.level(t) for t in args.time]
+        elif args.level is not None:
+            levels = [res.time(l) for l in args.level]
+        else:
+            levels = [res.time(l) for l in range(0, res.ntimes, args.stride)]
+        return levels
+
+    def _required_geometry_derivatives(self):
+        return max(0, super(Eval, self)._required_geometry_derivatives(self.args.interpret))
+
+    def _required_field_derivatives(self):
+        return super(Eval, self)._required_field_derivatives(self.args.interpret)
+
+    def run(self):
+        args = self.args
+        res = self.res
+
+        # Get the field we're interested in
+        field = res.field(args.field)
+        levels = self._levels()
+
+        # Get the patch IDs we're interested in
+        patches = args.patch
+        if patches is None and field.basis.npatches == 1:
+            patches = [1]
+        assert patches is not None
+
+        geometries = [field.geometry(p) for p in patches]
+        pardim = geometries[0].pardim
+        dim = geometries[0].dimension
+        parameters = [getattr(self.args, direction) for direction in 'uvw'[:pardim]]
+
+        required_geometry = self._required_geometry_derivatives()
+        required_field = self._required_field_derivatives()
+
+        if not self.args.bare:
+            titles = ['Level', 'Time', 'Patch']
+            titles.extend('uvw'[:pardim])
+            titles.extend('xyz'[:dim])
+            titles.append('Value')
+            print('  '.join(['{:>7}']*(len(titles) - 1) + ['{:>10}']).format(*titles))
+            print('━'*(len(titles) * 9 + 3))
+
+        for level in levels:
+            for i, (pid, geom) in enumerate(zip(patches, geometries)):
+                pars = [p[i] for p in parameters]
+                phys = self._evaluate(geom, pars, required_geometry)
+                values = self._evaluate(field.patch(level.level, pid), pars, required_field)
+                values = self._interpret(values, phys)
+
+                if self.args.bare:
+                    print('{:.16e}'.format(values[0]))
+                else:
+                    out = [level.level, level.t, pid]
+                    out.extend(pars)
+                    out += list(phys[0][0,:])
+                    out.append(values[0])
+                    format = '{:>7}  ' + '  '.join(['{:>7g}']*(len(out) - 2)) + '  {:>10g}'
+                    print(format.format(*out))
 
 
 def parse_command(args):
