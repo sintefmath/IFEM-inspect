@@ -135,7 +135,7 @@ class Result:
         return Time(n, self.hdf[str(n)])
 
     def level(self, t):
-        closest = self.time(i)
+        closest = self.time(0)
         diff = abs(t - closest.t)
         for i in range(1, self.ntimes):
             test_time = self.time(i)
