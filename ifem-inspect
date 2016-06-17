@@ -523,10 +523,11 @@ def parse_command(args):
 
     # If the file doesn't exist, it's probably because it's the first argument
     # for the command instead. Use the default file if it exists, then.
-    if not (os.path.isfile(args.file + '.hdf5') and
-            os.path.isfile(args.file + '.xml')):
-        args.args = [args.file] + args.args
-        args.file = default_file
+    if args.file:
+        if not (os.path.isfile(args.file + '.hdf5') and
+                os.path.isfile(args.file + '.xml')):
+            args.args = [args.file] + args.args
+            args.file = default_file
 
     return args
 
