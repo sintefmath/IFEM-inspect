@@ -1,0 +1,203 @@
+#+TITLE: IFEM-INSPECT SPECIFICATION
+
+* Basic usage
+IFEM-inspect reads IFEM HDF5 files, evaluates functions and produces output.
+
+Basic command line usage is:
+
+#+BEGIN_SRC
+ifem-inspect [file] command [args...]
+#+END_SRC
+
+The first argument specifies the HDF5 file to use. It may be a full or relative
+path to the HDF5 file, the sidecar XML file, or their common basename (without
+extension). The program should be smart enough to find everything it needs based
+on this.
+
+If the first argument does not specify a valid file according to these rules, it
+is assumed to be missing. In that case ifem-inspect looks for an HDF5/XML pair
+in the working directory, and if it finds an unambiguous one, uses that. If not,
+an error is signalled.
+
+* Commands
+Four commands are envisioned to begin with: help, summary, eval and plot.
+
+** Help
+Does what it says on the tin.
+
+** Summary
+Prints some basic info about the file: fields, dimensions, patches, number of
+DoFs, and other things of interest.
+
+** Eval
+Takes a single argument, an expression in a domain specific language (see below)
+and evaluates it.
+
+** Plot
+Produces plots of functions which are described in the same domain specific
+language. The basic arguments are:
+
+- =domain=: a DSL expression evaluating to a domain (typically a line but you
+  can imagine colour plots of surfaces as well)
+- =xfun=: a DSL expression evaluating to a variable for the /x/-axis
+- =yfun=: a DSL expression evaluating to a variable for the /y/-axis
+- =alt-yfun=: corresponding to =yfun= except for the second /y/-axis
+- =target=: either the string “screen” (default, show the plot in a window,
+  using matplotlib), or a filename to save the plot to. The extension of the
+  filename will determine the format:
+  + png: straight from matplotlib
+  + csv: dump plot data to text
+  + tex: generate includable tikz code
+  + pdf: not sure about this one, because you can make a pdf both with tex/tikz
+    and matplotlib
+
+* Domain specific language
+The DSL is heavily Python inspired. It only has expressions, no statements.
+
+** Variables
+The following variables are available in all (or, mostly all) contexts.
+
+- =x=, =y= and =z=: physical coordinates
+- =u=, =v= and =w=: parametric coordinates
+- =t= and =tid=: time and timestep
+- =pid=: patch number
+- every named field provided by the results file
+
+Variables represent quantities that have values (scalars or vectors) at every
+point in the domain in question. As such, they behave simultaneously as
+“numbers” and as callable objects. For example, =x=, =y=, =z= and all fields can
+be evaluated at points given by =pid=, =u=, =v= and =w=:
+
+#+BEGIN_SRC
+x(pid=1, u=0, v=0.5)
+pressure(pid=5, u=0, v=0, w=0)
+t(tid=1)
+#+END_SRC
+
+Evaluation should signal an error if you are trying to do something that does
+not make sense, such as
+
+#+BEGIN_SRC
+t(pid=1)
+#+END_SRC
+
+** Mathematical and physical operations of interest
+Some functions that operate on variables and other expressions:
+
+- =grad(scalar)=: scalar in, vector out
+- =div(vector)=: vector in, scalar out
+- =dot(vector, vector)=: two vectors in, scalar out
+- =cross(vector, vector)=: two 3-vectors in, 3-vector out
+- =curl(vector)=: 3-vector in, 3-vector out, or 2-vector in, scalar out
+- =strain=: /d/-vector in, /d/-tensor out
+- =stress=: /d/-tensor in, /d/-tensor out, or /d/-vector in, /d/-tensor out
+
+As you can see we are free to design the functions to be simple to use, for
+example, =stress= can behave differently based on whether it receives a tensor
+(a strain) or a vector (displacement), i.e.
+
+#+BEGIN_SRC
+stress(vec) == stress(strain(vec))
+#+END_SRC
+
+*Note:* Need some way to specify material parameters here.
+
+** Domains
+Domains are used to perform integration and to define the area of interest for
+plots. Three functions define physical domains:
+
+- =line=
+- =face=
+- =volume=
+
+Each should be callable with named arguments =pid=, =u=, =v= and =w=. As such
+they behave almost identically, and the separation by name is mostly for error
+control (i.e. =face= should error out if it is discovered that the arguments
+given actually produce a volume).
+
+The =timeline= function defines a domain in time instead of space.
+
+The =join= function creates unions of domains. (Currently I can only imagine
+that this might work for lines). E.g. to create a line that crosses two patches:
+
+#+BEGIN_SRC
+join(line(pid=1,u=1), line(pid=2,u=1))
+#+END_SRC
+
+The =cart= function creates Cartesian products of its arguments (e.g. to create
+a joint time-space domain). We can agree that the keyword =universe= evaluates
+to the full domain.
+
+Here we can support a lot of interesting syntax, for example
+
+#+BEGIN_SRC
+line(pid=1:2,u=1) == join(line(pid=1,u=1), line(pid=2,u=1))
+#+END_SRC
+
+and
+
+#+BEGIN_SRC
+surface(pid=1,u>1,u<3)
+#+END_SRC
+
+or, for that matter,
+
+#+BEGIN_SRC
+surface(pid=1,1<u<3)
+#+END_SRC
+
+** Integration
+The =int= function accepts a domain and an expression to integrate over that
+domain.
+
+** Vectorization
+If =<expr>= evaluates to a scalar, then the expression
+
+#+BEGIN_SRC
+for(<varname>=<range>, <expr>)
+#+END_SRC
+
+evaluates to a vector, where =<expr>= is evaluated with =<varname>= bound to
+each value in =<range>=, which is itself a vector. Some basic tools for building
+vectors can be based on Python slice syntax (=start:end= and =start:step:end=),
+and we can support functions such as =linspace= and possibly also a
+corresponding function for geometric ranges.
+
+We should also be able to create vectors with =[a,b,c]= syntax. Another thing
+that I would like to be able to do is to support syntax such as
+
+#+BEGIN_SRC
+[f,g,h](a,b,c)
+#+END_SRC
+
+as shorthand for
+
+#+BEGIN_SRC
+[f(a,b,c), g(a,b,c), h(a,b,c)]
+#+END_SRC
+
+** Validity of variables
+Variables are not all bound and usable in all contexts. For example, in the
+=eval= command, an expression such as =u= by itself does not make sense. The
+rules governing contexts and validity are fairly complicated, but it should as a
+goal be evident that when something does not work, common sense has been
+violated (as opposed to uncommon sense).
+
+- A domain implies a certain set of bound variables. A physical domain (=line=,
+  =face=, =volume=) binds all physical space variables (=x=, =y=, =z=, =u=, =v=,
+  =w=, =pid=), while a time domain (=timeline=) binds all time variables (=t=
+  and =tid=).
+- A cartesian product domain binds all the variables bound in each of its
+  arguments.
+- The =join= function can only be used to join one-dimensional domains of the
+  same type (so, no physical and temporal domains)
+
+The variables implicitly bound by the domain given in the =domain= argument to
+the =plot= command are then usable in all of the =xfun=, =yfun= and =alt-yfun=
+expressions. Similarly, the variables bound by the domain in a call to =int=
+will be usable in evaluating its integrand.
+
+The fundamental variables evaluate correctly only in contexts where a sufficient
+set of bindings exist. For example, =t= can be used in contexts where =tid= is
+bound, and the field variables can be used in contexts that bind a sufficient
+number of physical space variables.
