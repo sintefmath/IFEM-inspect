@@ -1,0 +1,30 @@
+@@grammar :: IFEMScript
+
+full = expr $;
+expr = arith;
+
+arith = term {('+' | '-') term};
+term = factor {('*' | '/') factor};
+factor = ('+' | '-') factor | power;
+power = @+:atom_expr ['**' @+:factor];
+
+atom_expr = trailer_expr;
+trailer_expr = atom { trailer };
+trailer = '[' index_list ']' | '(' arg_list ')' | '.' index_identifier;
+atom = '(' @:expr ')' | vector | identifier | number;
+identifier = /[a-zA-Z_][a-zA-Z0-9_]*/;
+number = /[0-9]*([0-9]\.|\.[0-9]|[0-9])[0-9]*([eE][+-]?[0-9]+)?/;
+
+vector = range_lit | vector_lit;
+range_lit = @+:number ':' @+:number [':' @+:number];
+vector_lit = '[' @+:expr {',' @:expr} ']';
+
+index_list = [ @+:index ] {',' @:index};
+index = index_uint | index_identifier;
+index_identifier = /[xyz:]*/;
+index_uint = /[0-9]+/;
+
+arg_list = @+:arg {',' @:arg};
+arg = double_arg | single_arg | expr;
+single_arg = identifier ('=' | '<=' | '>=' | '<' | '>') expr;
+double_arg = expr ('<=' | '<') identifier ('<=' | '<') expr;

@@ -8,6 +8,9 @@ import readline
 import sys
 import textwrap
 
+from ifem.parser import IFEMScriptParser
+from ifem.ast import IFEMScriptSemantics
+
 
 commands = OrderedDict()
 Command = namedtuple('Command', ['func', 'parser', 'needs_file'])
@@ -92,13 +95,17 @@ def help(cmd):
 @command()
 def interactive(basename):
     """Enter REPL mode."""
+    parser = IFEMScriptParser()
+    semantics = IFEMScriptSemantics()
     try:
         while True:
             s = input('>>> ')
-            print(repr(s))
+            ast = parser.parse(s, rule_name='full', semantics=semantics)
+            print(repr(ast))
     except EOFError:
         print()
         sys.exit(0)
+
 
 def main():
     """Read the command and file arguments, and dispatch accordingly."""
