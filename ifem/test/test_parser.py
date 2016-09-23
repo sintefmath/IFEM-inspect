@@ -2,7 +2,7 @@ import pytest
 from grako.exceptions import FailedParse
 
 from ifem.parser import IFEMScriptParser
-from ifem.ast import *
+from ifem.AST import *
 
 
 def parse(s):

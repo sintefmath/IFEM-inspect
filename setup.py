@@ -10,6 +10,15 @@ setup(
     author_email='eivind.fonn@sintef.no',
     license='GPL3',
     url='https://github.com/sintefmath/IFEM-inspect',
-    packages=['ifem'],
-    scripts=['ifem-inspect'],
+    py_modules=['ifem'],
+    install_requires=[
+        'splipy',
+        'click',
+        'grako',
+        'h5py',
+        'numpy',
+    ],
+    entry_points={
+        'console_scripts': ['ifem-inspect=ifem.__main__:main']
+    }
 )
