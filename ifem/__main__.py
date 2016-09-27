@@ -5,7 +5,7 @@ import sys
 import textwrap
 
 from ifem.parser import IFEMScriptParser
-from ifem.AST import IFEMScriptSemantics, Namespace, IFEMUnboundError, IFEMTypeError
+from ifem.AST import IFEMScriptSemantics, IFEMUnboundError, IFEMTypeError
 from ifem.result import Result
 
 
@@ -59,12 +59,16 @@ def interactive(config):
         try:
             while True:
                 ast = parse(input('>>> '))
-                print(ast)
                 try:
-                    print(ast.free_vars(res.namespace()))
-                    print(ast.type(res.namespace()))
+                    ast.scope(res.namespace())
+                except IFEMUnboundError as e:
+                    print('Scope check:', e)
+                    continue
+                try:
+                    print('Type check:', ast.type(res.namespace()))
                 except (NotImplementedError, IFEMUnboundError, IFEMTypeError) as e:
-                    print(e)
+                    print('Type check:', e)
+                    continue
         except EOFError:
             print()
             sys.exit(0)

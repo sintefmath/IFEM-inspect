@@ -1,14 +1,85 @@
 from copy import deepcopy
+from enum import IntEnum
 from grako.exceptions import ParseError
 from collections import namedtuple
+from math import ceil
+
 from ifem.parser import IFEMScriptSemantics as DefaultSemantics
+from ifem.namespace import Boundness, IFEMUnboundError
+
+
+
+class IFEMTypeError(Exception): pass
+
+
+class Type:
+
+    class TypeBase:
+        def __init__(self):
+            self.args = []
+        def __repr__(self):
+            if self.args:
+                return '{}({})'.format(self.__class__.__name__,
+                                       ','.join(str(a) for a in self.args))
+            return self.__class__.__name__
+        def __eq__(self, other):
+            return self.__class__ == other.__class__ and self.args == other.args
+
+    class Callable(TypeBase):
+        def restype(self, *intypes):
+            raise NotImplementedError('restype() not implemented for this callable')
+
+    class Field(Callable):
+        def __init__(self, *args):
+            self.args = list(args)
+            self.dim = len(args)
+        def restype(self, *intypes):
+            if any(not isinstance(t, Type.EqCond) for t in intypes):
+                raise IFEMTypeError("Fields must be called with '='-arguments")
+            return self
+
+    @classmethod
+    def ScalarField(cls):
+        return cls.Field()
+
+    @classmethod
+    def VectorField(cls, n):
+        return cls.Field(n)
+
+    @classmethod
+    def TensorField(cls, m, n):
+        return cls.Field(m, n)
+
+    class Cond(TypeBase): pass
+    class EqCond(Cond):
+        def __init__(self, rtype):
+            self.args = [rtype]
+    class IneqCond(Cond): pass
+    class DoubleIneqCond(Cond): pass
+
+
+class EvalLevel(IntEnum):
+    scope = 1
+    type = 2
+    full = 3
 
 
 class ASTNode:
-    pass
+    def evaluate(self, namespace, level=EvalLevel.scope):
+        if level == EvalLevel.scope:
+            return self.scope(namespace)
+        elif level == EvalLevel.type:
+            return self.type(namespace)
+        elif level == full:
+            return self.eval(namespace)
 
 
 class Identifier(ASTNode, namedtuple('Identifier', ['name'])):
+    def scope(self, namespace):
+        if namespace.boundness(self.name) < Boundness.dependent:
+            raise IFEMUnboundError('No such binding: {}'.format(self.name))
+    def type(self, namespace):
+        return namespace[self.name]
     def __repr__(self):
         return '{{id {}}}'.format(self.name)
     def __eq__(self, other):
@@ -16,6 +87,10 @@ class Identifier(ASTNode, namedtuple('Identifier', ['name'])):
 
 
 class Number(ASTNode, namedtuple('Number', ['value'])):
+    def scope(self, namespace):
+        pass
+    def type(self, namespace):
+        return Type.ScalarField()
     def __repr__(self):
         return '{{num {}}}'.format(self.value)
     def __eq__(self, other):
@@ -23,6 +98,13 @@ class Number(ASTNode, namedtuple('Number', ['value'])):
 
 
 class UnOp(ASTNode, namedtuple('UnOp', ['operator', 'operand'])):
+    def type(self, namespace):
+        subtype = self.operand.type(namespace)
+        if not isinstance(subtype, Type.Field):
+            raise IFEMTypeError("Operand to '{}' not a field".format(self.operator))
+        return self.operand.type(namespace)
+    def free_vars(self, namespace):
+        return self.operand.free_vars(namespace)
     def __repr__(self):
         return '{{{} {}}}'.format(self.operator, self.operand)
     def __eq__(self, other):
@@ -32,6 +114,31 @@ class UnOp(ASTNode, namedtuple('UnOp', ['operator', 'operand'])):
 
 
 class BinOp(ASTNode, namedtuple('BinOp', ['operator', 'l_operand', 'r_operand'])):
+    def scope(self, namespace):
+        self.l_operand.scope(namespace)
+        self.r_operand.scope(namespace)
+    def type(self, namespace):
+        r_type = self.r_operand.type(namespace)
+        if self.operator in {'+', '-', '*', '/', '**'}:
+            l_type = self.l_operand.type(namespace)
+            if not (isinstance(l_type, Type.Field) and isinstance(r_type, Type.Field)):
+                raise IFEMTypeError("Operand '{}' must have field arguments".format(self.operator))
+            if self.operator == '**' and r_type.dim > 0:
+                raise IFEMTypeError('Exponent must be scalar')
+            if l_type.dim > 0 and r_type.dim > 0 and l_type != r_type:
+                raise IFEMTypeError("Operands to '{}' have incompatible types".format(self.operator))
+            return r_type if r_type.dim > 0 else l_type
+        if self.operator == '=':
+            return Type.EqCond(r_type)
+        if self.operator in {'<', '<=', '>', '>='}:
+            return Type.IneqCond()
+    def free_vars(self, namespace):
+        if self.operator in {'+', '-', '*', '/', '**'}:
+            ret = self.l_operand.free_vars(namespace)
+            ret |= self.r_operand.free_vars(namespace)
+            return ret
+        if self.operator in {'=', '<', '<=', '>', '>='}:
+            return self.r_operand.free_vars(namespace)
     def __repr__(self):
         return '{{{} {} {}}}'.format(self.operator, self.l_operand, self.r_operand)
     def __eq__(self, other):
@@ -44,6 +151,12 @@ class BinOp(ASTNode, namedtuple('BinOp', ['operator', 'l_operand', 'r_operand'])
 class DoubleIneq(ASTNode,
                  namedtuple('DoubleIneq',
                             ['identifier', 'lower', 'upper', 'lower_strict', 'upper_strict'])):
+    def type(self, namespace):
+        return Type.DoubleIneqCond()
+    def free_vars(self, namespace):
+        ret = self.lower.free_vars(namespace)
+        ret |= self.upper.free_vars(namespace)
+        return ret
     def __repr__(self):
         return '{{dineq {} {} {} {} {}}}'.format(
             self.lower, '<' if self.lower_strict else '<=', self.identifier,
@@ -59,6 +172,23 @@ class DoubleIneq(ASTNode,
 
 
 class Subscript(ASTNode, namedtuple('Subscript', ['root', 'indices'])):
+    def type(self, namespace):
+        r_type = self.root.type(namespace)
+        if not isinstance(r_type, Type.Field):
+            raise IFEMTypeError('Subscripting a non-field')
+        if len(self.indices) != r_type.dim:
+            raise IFEMTypeError('Expected {} indices but found {}'.format(
+                r_type.dim, len(self.indices)
+            ))
+        resulting = []
+        for i, dim in zip(self.indices, r_type.args):
+            if isinstance(i, int) and i >= dim:
+                raise IFEMTypeError('Index out of bounds')
+            elif isinstance(i, Slice):
+                resulting.append(dim)
+        return Type.Field(*resulting)
+    def free_vars(self, namespace):
+        return self.root.free_vars(namespace)
     def __repr__(self):
         return '{{sub {} {}}}'.format(self.root, self.indices)
     def __eq__(self, other):
@@ -75,6 +205,16 @@ class Slice(ASTNode):
 
 
 class FunCall(ASTNode, namedtuple('FunCall', ['func', 'args'])):
+    def type(self, namespace):
+        func_type = self.func.type(namespace)
+        if not isinstance(func_type, Type.Callable):
+            raise IFEMTypeError('Object not callable')
+        arg_types = [arg.type(namespace) for arg in self.args]
+        return func_type.restype(*arg_types)
+    def free_vars(self, namespace):
+        ret = self.func.free_vars(namespace)
+        ret.update(*(arg.free_vars(namespace) for arg in self.args))
+        return ret
     def __repr__(self):
         return '{{fnc {} {}}}'.format(self.func, self.args)
     def __eq__(self, other):
@@ -84,6 +224,23 @@ class FunCall(ASTNode, namedtuple('FunCall', ['func', 'args'])):
 
 
 class For(ASTNode, namedtuple('For', ['bindings', 'expr'])):
+    def type(self, namespace):
+        b_types = [b.type(namespace) for b in self.bindings]
+        if any(not isinstance(t, Type.EqCond) for t in b_types):
+            raise IFEMTypeError("'for' must be called with '='-arguments")
+        if any(not isinstance(t.args[-1], Type.Field) for t in b_types):
+            raise IFEMTypeError("'for' must have field ranges")
+        e_type = self.expr.type(namespace.shadow(**{
+            b.l_operand.name: Type.ScalarField()
+            for b in self.bindings
+        }))
+        if not isinstance(e_type, Type.Field):
+            raise IFEMTypeError("'for' must have a field expression")
+        dims = []
+        for b_type in b_types:
+            dims.extend(b_type.args[-1].args)
+        dims.extend(e_type.args)
+        return Type.Field(*dims)
     def __repr__(self):
         return '{{for {} {}}}'.format(self.bindings, self.expr)
     def __eq__(self, other):
@@ -93,6 +250,21 @@ class For(ASTNode, namedtuple('For', ['bindings', 'expr'])):
 
 
 class Int(ASTNode, namedtuple('Int', ['domain', 'expr'])):
+    def type(self, namespace):
+        new_bindings = {}
+        for b in self.domain:
+            t = b.type(namespace)
+            if isinstance(t, Type.EqCond):
+                new_bindings[b.l_operand.name] = t
+            elif isinstance(t, Type.DoubleIneqCond):
+                l_type = b.lower.type(namespace)
+                r_type = b.upper.type(namespace)
+                if l_type != Type.ScalarField() or r_type != Type.ScalarField():
+                    raise IFEMTypeError('Bounds must be scalars')
+                new_bindings[b.identifier.name] = Type.ScalarField()
+            else:
+                raise IFEMTypeError("'int' must be called with '=' or '<..<'-arguments")
+        return self.expr.type(namespace.shadow(**new_bindings))
     def __repr__(self):
         return '{{int {} {}}}'.format(self.domain, self.expr)
     def __eq__(self, other):
@@ -102,6 +274,18 @@ class Int(ASTNode, namedtuple('Int', ['domain', 'expr'])):
 
 
 class Vector(ASTNode, namedtuple('Vector', ['components'])):
+    def type(self, namespace):
+        subtypes = [c.type(namespace) for c in self.components]
+        if not isinstance(subtypes[0], Type.Field):
+            raise IFEMTypeError('Vectors must contain fields')
+        if not all(x == subtypes[0] for x in subtypes):
+            raise IFEMTypeError('Vectors must be unityped')
+        dims = [len(self.components)] + subtypes[0].args
+        return Type.Field(*dims)
+    def free_vars(self, namespace):
+        ret = set()
+        ret.update(*(comp.free_vars(namespace) for comp in self.components))
+        return ret
     def __repr__(self):
         return '{{vec {}}}'.format(self.components)
     def __eq__(self, other):
@@ -109,6 +293,11 @@ class Vector(ASTNode, namedtuple('Vector', ['components'])):
 
 
 class Range(ASTNode, namedtuple('Range', ['start', 'stop', 'step'])):
+    def type(self, namespace):
+        npts = (self.stop.value - self.start.value) / self.step.value + 1
+        return Type.VectorField(int(ceil(npts)))
+    def free_vars(self, namespace):
+        return set()
     def __repr__(self):
         return '{{rng {}:{}:{}}}'.format(self.start, self.step, self.stop)
     def __eq__(self, other):
