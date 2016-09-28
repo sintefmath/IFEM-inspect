@@ -3,22 +3,13 @@ import enum
 from itertools import chain
 
 
-class classproperty:
-
-    def __init__(self, fget):
-        self.fget = fget
-
-    def __get__(self, owner_self, owner_cls):
-        return self.fget(owner_cls)
-
-
 class BoundedEnum(enum.IntEnum):
 
-    @classproperty
+    @classmethod
     def max(cls):
         return max(cls)
 
-    @classproperty
+    @classmethod
     def min(cls):
         return min(cls)
 
@@ -46,7 +37,7 @@ class IFEMUnbindableError(Exception): pass
 class IFEMUnboundError(Exception): pass
 
 
-class Namespace:
+class Namespace(object):
 
     def __init__(self, parent=None):
         self._parent = parent
@@ -141,7 +132,7 @@ class Namespace:
 
         if ignore is None:
             ignore = set()
-        ret = Boundness.min
+        ret = Boundness.min()
 
         # If it's restricted, it's at least that much.
         if name in self.restricted:

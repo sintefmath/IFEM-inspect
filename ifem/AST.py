@@ -25,6 +25,8 @@ class Type:
             return self.__class__.__name__
         def __eq__(self, other):
             return self.__class__ == other.__class__ and self.args == other.args
+        def __ne__(self, other):
+            return not self == other
 
     class Callable(TypeBase):
         def restype(self, *intypes):
