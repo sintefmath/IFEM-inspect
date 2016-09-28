@@ -83,8 +83,12 @@ class Result:
         if self.ntimes > 1:
             deps.append('__time__')
 
-        for fieldname  in self.fields:
-            ns.create_metavar(fieldname, 'all', *deps)
+        for fieldname, field in self.fields.items():
+            if field.components > 1:
+                type = Type.VectorField(deps, field.components)
+            else:
+                type = Type.ScalarField(deps)
+            ns.restrict(fieldname, type)
 
         return ns
 

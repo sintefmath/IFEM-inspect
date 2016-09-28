@@ -63,7 +63,7 @@ class Namespace(object):
             ns.exclude(c, *param)
 
         for c in chain(param, physical):
-            ns.restrict(c, Type.ScalarField())
+            ns.restrict(c, Type.ScalarField(['__space__']))
 
         ns.create_metavar('__param__', 'all', *param)
         ns.create_metavar('__physical__', 'all', *physical)
@@ -72,8 +72,8 @@ class Namespace(object):
         if time:
             ns.exclude('t', 'tid')
             ns.exclude('tid', 't')
-            ns.restrict('t', Type.ScalarField())
-            ns.restrict('tid', Type.ScalarField())
+            ns.restrict('t', Type.ScalarField(['__time__']))
+            ns.restrict('tid', Type.ScalarField(['__time__']))
             ns.create_metavar('__time__', 'any', 't', 'tid')
 
         ns._bind(**bindings)
@@ -193,3 +193,9 @@ class Namespace(object):
         ns = Namespace(self)
         ns._bind(**bindings)
         return ns
+
+    def remove_bound_deps(self, type):
+        if not isinstance(type, Type.Field):
+            raise IFEMTypeError('Expected a field')
+        deps = type.deps - {d for d in type.deps if self.boundness(d) >= Boundness.dependent}
+        return Type.Field(deps, *type.shape)

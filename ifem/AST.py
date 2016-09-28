@@ -2,6 +2,7 @@ from copy import deepcopy
 from enum import IntEnum
 from grako.exceptions import ParseError
 from collections import namedtuple
+from itertools import chain
 from math import ceil
 from six import string_types
 
@@ -42,7 +43,7 @@ class Number(ASTNode, namedtuple('Number', ['value'])):
     def scope(self, namespace):
         pass
     def type(self, namespace):
-        return Type.ScalarField()
+        return Type.ScalarField([])
     def __repr__(self):
         return '{{num {}}}'.format(self.value)
     def __eq__(self, other):
@@ -79,7 +80,9 @@ class BinOp(ASTNode, namedtuple('BinOp', ['operator', 'l_operand', 'r_operand'])
                 raise IFEMTypeError('Exponent must be scalar')
             if l_type.dim > 0 and r_type.dim > 0 and l_type != r_type:
                 raise IFEMTypeError("Operands to '{}' have incompatible types".format(self.operator))
-            return r_type if r_type.dim > 0 else l_type
+            shape = r_type.shape if r_type.dim > 0 else l_type.shape
+            deps = l_type.deps | r_type.deps
+            return Type.Field(deps, *shape)
         if self.operator == '=':
             return Type.EqCond(r_type)
         if self.operator in {'<', '<=', '>', '>='}:
@@ -133,12 +136,12 @@ class Subscript(ASTNode, namedtuple('Subscript', ['root', 'indices'])):
                 r_type.dim, len(self.indices)
             ))
         resulting = []
-        for i, dim in zip(self.indices, r_type.args):
+        for i, dim in zip(self.indices, r_type.shape):
             if isinstance(i, int) and i >= dim:
                 raise IFEMTypeError('Index out of bounds')
             elif isinstance(i, Slice):
                 resulting.append(dim)
-        return Type.Field(*resulting)
+        return Type.Field(r_type.deps, *resulting)
     def free_vars(self, namespace):
         return self.root.free_vars(namespace)
     def __repr__(self):
@@ -180,19 +183,21 @@ class For(ASTNode, namedtuple('For', ['bindings', 'expr'])):
         b_types = [b.type(namespace) for b in self.bindings]
         if any(not isinstance(t, Type.EqCond) for t in b_types):
             raise IFEMTypeError("'for' must be called with '='-arguments")
-        if any(not isinstance(t.args[-1], Type.Field) for t in b_types):
+        if any(not isinstance(t.rtype, Type.Field) for t in b_types):
             raise IFEMTypeError("'for' must have field ranges")
-        e_type = self.expr.type(namespace.shadow(**{
-            b.l_operand.name: Type.ScalarField()
-            for b in self.bindings
-        }))
-        if not isinstance(e_type, Type.Field):
+        sub_namespace = namespace.shadow(**{
+            b.l_operand.name: Type.ScalarField(t.rtype.deps)
+            for b, t in zip(self.bindings, b_types)
+        })
+        sub_type = self.expr.type(sub_namespace)
+        if not isinstance(sub_type, Type.Field):
             raise IFEMTypeError("'for' must have a field expression")
         dims = []
         for b_type in b_types:
-            dims.extend(b_type.args[-1].args)
-        dims.extend(e_type.args)
-        return Type.Field(*dims)
+            dims.extend(b_type.rtype.shape)
+        dims.extend(sub_type.shape)
+        ret_type = Type.Field(sub_type.deps, *dims)
+        return sub_namespace.remove_bound_deps(ret_type)
     def __repr__(self):
         return '{{for {} {}}}'.format(self.bindings, self.expr)
     def __eq__(self, other):
@@ -207,16 +212,20 @@ class Int(ASTNode, namedtuple('Int', ['domain', 'expr'])):
         for b in self.domain:
             t = b.type(namespace)
             if isinstance(t, Type.EqCond):
-                new_bindings[b.l_operand.name] = t
+                new_bindings[b.l_operand.name] = t.rtype
             elif isinstance(t, Type.DoubleIneqCond):
                 l_type = b.lower.type(namespace)
                 r_type = b.upper.type(namespace)
-                if l_type != Type.ScalarField() or r_type != Type.ScalarField():
+                if not (isinstance(l_type, Type.Field) and isinstance(r_type, Type.Field)):
+                    raise IFEMTypeError('Bounds must be fields')
+                if not (l_type.dim == 0 and r_type.dim == 0):
                     raise IFEMTypeError('Bounds must be scalars')
-                new_bindings[b.identifier.name] = Type.ScalarField()
+                new_bindings[b.identifier.name] = Type.ScalarField(l_type.deps | r_type.deps)
             else:
                 raise IFEMTypeError("'int' must be called with '=' or '<..<'-arguments")
-        return self.expr.type(namespace.shadow(**new_bindings))
+        sub_namespace = namespace.shadow(**new_bindings)
+        sub_type = self.expr.type(sub_namespace)
+        return sub_namespace.remove_bound_deps(sub_type)
     def __repr__(self):
         return '{{int {} {}}}'.format(self.domain, self.expr)
     def __eq__(self, other):
@@ -230,10 +239,11 @@ class Vector(ASTNode, namedtuple('Vector', ['components'])):
         subtypes = [c.type(namespace) for c in self.components]
         if not isinstance(subtypes[0], Type.Field):
             raise IFEMTypeError('Vectors must contain fields')
-        if not all(x == subtypes[0] for x in subtypes):
-            raise IFEMTypeError('Vectors must be unityped')
-        dims = [len(self.components)] + subtypes[0].args
-        return Type.Field(*dims)
+        if not all(x.shape == subtypes[0].shape for x in subtypes):
+            raise IFEMTypeError('Vectors must have elements of same shape')
+        deps = set(chain.from_iterable(x.deps for x in subtypes))
+        dims = [len(self.components)] + subtypes[0].shape
+        return Type.Field(deps, *dims)
     def free_vars(self, namespace):
         ret = set()
         ret.update(*(comp.free_vars(namespace) for comp in self.components))
@@ -247,7 +257,7 @@ class Vector(ASTNode, namedtuple('Vector', ['components'])):
 class Range(ASTNode, namedtuple('Range', ['start', 'stop', 'step'])):
     def type(self, namespace):
         npts = (self.stop.value - self.start.value) / self.step.value + 1
-        return Type.VectorField(int(ceil(npts)))
+        return Type.VectorField([], int(ceil(npts)))
     def free_vars(self, namespace):
         return set()
     def __repr__(self):
