@@ -2,6 +2,7 @@ import pytest
 
 from ifem.parser import IFEMScriptParser
 from ifem.namespace import Namespace
+from ifem.types import Type, IFEMTypeError
 from ifem.AST import *
 
 
@@ -22,6 +23,8 @@ def test_identifier():
         tens33=Type.TensorField(3,3),
     )
 
+    assert typeof('u', ns) == Type.ScalarField()
+    assert typeof('x', ns) == Type.ScalarField()
     assert typeof('scl', ns) == Type.ScalarField()
     for i, v in enumerate(['vec1', 'vec2', 'vec3'], start=1):
         assert typeof(v, ns) == Type.VectorField(i)

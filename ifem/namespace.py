@@ -2,6 +2,8 @@ from collections import namedtuple
 import enum
 from itertools import chain
 
+from ifem.types import Type
+
 
 class BoundedEnum(enum.IntEnum):
 
@@ -45,7 +47,7 @@ class Namespace(object):
 
         if not parent:
             self._exclusion_rules = {}
-            self._restricted = set()
+            self._restricted = {}
             self._all_metavars = {}
             self._any_metavars = {}
 
@@ -61,7 +63,7 @@ class Namespace(object):
             ns.exclude(c, *param)
 
         for c in chain(param, physical):
-            ns.restrict(c)
+            ns.restrict(c, Type.ScalarField())
 
         ns.create_metavar('__param__', 'all', *param)
         ns.create_metavar('__physical__', 'all', *physical)
@@ -70,8 +72,8 @@ class Namespace(object):
         if time:
             ns.exclude('t', 'tid')
             ns.exclude('tid', 't')
-            ns.restrict('t')
-            ns.restrict('tid')
+            ns.restrict('t', Type.ScalarField())
+            ns.restrict('tid', Type.ScalarField())
             ns.create_metavar('__time__', 'any', 't', 'tid')
 
         ns._bind(**bindings)
@@ -87,9 +89,12 @@ class Namespace(object):
 
     def __getitem__(self, name):
         ret = self._lookup_safe(name)
-        if ret is None:
+        if ret is not None:
+            return ret
+        try:
+            return self.restricted[name]
+        except KeyError:
             raise IFEMUnboundError('No such binding: {}'.format(name))
-        return ret
 
     def _bind(self, **bindings):
         for name, value in bindings.items():
@@ -116,8 +121,8 @@ class Namespace(object):
     def exclude(self, name, *exclusions):
         self._exclusion_rules.setdefault(name, set()).update(exclusions)
 
-    def restrict(self, name):
-        self._restricted.add(name)
+    def restrict(self, name, value):
+        self._restricted[name] = value
 
     def create_metavar(self, name, kind, *deps):
         if kind == 'all':
