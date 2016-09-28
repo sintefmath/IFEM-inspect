@@ -12,7 +12,9 @@ setup(
     url='https://github.com/sintefmath/IFEM-inspect',
     py_modules=['ifem'],
     install_requires=[
-        'splipy',
+        'Splipy',
+        'six',
+        'enum34',
         'click',
         'grako',
         'h5py',
