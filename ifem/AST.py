@@ -3,6 +3,7 @@ from enum import IntEnum
 from grako.exceptions import ParseError
 from collections import namedtuple
 from math import ceil
+from six import string_types
 
 from ifem.parser import IFEMScriptSemantics as DefaultSemantics
 from ifem.namespace import Boundness, IFEMUnboundError
@@ -64,7 +65,7 @@ class EvalLevel(IntEnum):
     full = 3
 
 
-class ASTNode:
+class ASTNode(object):
     def evaluate(self, namespace, level=EvalLevel.scope):
         if level == EvalLevel.scope:
             return self.scope(namespace)
@@ -349,10 +350,10 @@ class IFEMScriptSemantics(DefaultSemantics):
                 else:
                     raw_inds = trailer[1]
                 char_to_num = lambda c: Slice() if c == ':' else 'xyz'.index(c)
-                if len(raw_inds) == 1 and isinstance(raw_inds[0], str):
+                if len(raw_inds) == 1 and isinstance(raw_inds[0], string_types):
                     inds = [char_to_num(i) for i in raw_inds[0]]
                 else:
-                    inds = [char_to_num(i) if isinstance(i, str) else i
+                    inds = [char_to_num(i) if isinstance(i, string_types) else i
                             for i in raw_inds]
                 return Subscript(root, inds)
             elif trailer[0] == '(':
