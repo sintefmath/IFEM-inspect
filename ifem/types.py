@@ -1,8 +1,8 @@
 class IFEMTypeError(Exception): pass
 
-class Type:
+class Type(object):
 
-    class TypeBase:
+    class TypeBase(object):
         def __init__(self):
             self.args = []
         def __repr__(self):
