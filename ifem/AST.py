@@ -8,7 +8,7 @@ from six import string_types
 
 from ifem.parser import IFEMScriptSemantics as DefaultSemantics
 from ifem.namespace import Boundness, IFEMUnboundError
-from ifem.types import Type, IFEMTypeError
+from ifem.typing import Type, IFEMTypeError
 
 
 class EvalLevel(IntEnum):

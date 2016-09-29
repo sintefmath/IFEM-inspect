@@ -2,7 +2,7 @@ from collections import namedtuple
 import enum
 from itertools import chain
 
-from ifem.types import Type
+from ifem.typing import Type
 
 
 class BoundedEnum(enum.IntEnum):

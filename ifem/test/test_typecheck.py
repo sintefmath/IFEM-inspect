@@ -2,7 +2,7 @@ import pytest
 
 from ifem.parser import IFEMScriptParser
 from ifem.namespace import Namespace
-from ifem.types import Type, IFEMTypeError
+from ifem.typing import Type, IFEMTypeError
 from ifem.AST import *
 
 
