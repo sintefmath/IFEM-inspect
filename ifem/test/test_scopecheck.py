@@ -14,11 +14,12 @@ def check(s, namespace):
 def test_identifier():
     ns = Namespace.simple(2, 2, False, test=True)
 
-    check('test', ns)
-    for v in ['pid', 'u', 'v', 'w', 'x', 'y', 'z']:
-        with pytest.raises(IFEMUnboundError):
-            check(v, ns)
+    for v in ['pid', 'u', 'v', 'x', 'y', 'test']:
+        check(v, ns)
 
+    for v in  ['w', 'z', 't', 'tid', 'nonexistent']:
+        with pytest.raises(IFEMUnboundError):
+            check('nonexistent', ns)
 
 def test_number():
     ns = Namespace.simple(2, 2, False)
@@ -31,10 +32,12 @@ def test_arith():
     check('a + b', ns)
     check('a + b*c/d', ns)
     check('b**d', ns)
+    check('b + u', ns)
+    check('a - x', ns)
 
     with pytest.raises(IFEMUnboundError):
-        check('b + u', ns)
-        check('a - x', ns)
+        check('d + w', ns)
+        check('c - z', ns)
 
 
 # def test_subscript():

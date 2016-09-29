@@ -29,7 +29,7 @@ class ASTNode(object):
 
 class Identifier(ASTNode, namedtuple('Identifier', ['name'])):
     def scope(self, namespace):
-        if namespace.boundness(self.name) < Boundness.dependent:
+        if namespace.boundness(self.name) < Boundness.restricted:
             raise IFEMUnboundError('No such binding: {}'.format(self.name))
     def type(self, namespace):
         return namespace[self.name]

@@ -10,7 +10,7 @@ class Type(object):
         def __repr__(self):
             if self.args:
                 return '{}({})'.format(self.__class__.__name__,
-                                       ','.join(str(a) for a in self.args))
+                                       ', '.join(str(a) for a in self.args))
             return self.__class__.__name__
 
         def __eq__(self, other):
