@@ -1,6 +1,7 @@
 import click
 from os import listdir
 from os.path import splitext, isfile
+import readline
 import sys
 import textwrap
 
