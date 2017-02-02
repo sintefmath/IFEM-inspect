@@ -1,11 +1,15 @@
 import click
+import IPython
+from IPython.terminal.embed import InteractiveShellEmbed
 from os import listdir
 from os.path import splitext, isfile
 import readline
 import sys
 import textwrap
 
+import ifem
 from ifem.result import Result
+from ifem.script import exec_string
 
 
 class Config:
@@ -15,8 +19,7 @@ class Config:
 
     def result(self):
         if not self.basename:
-            print('No result file found.', file=sys.stderr)
-            sys.exit(2)
+            raise FileNotFoundError('No result file found')
         return Result(self.basename)
 
 pass_config = click.make_pass_decorator(Config, ensure=True)
@@ -55,8 +58,20 @@ def main(config, basename):
 def interactive(config):
     """Enter REPL mode."""
     with config.result() as res:
-        pass
+        banner = '\n'.join([
+            'Python ' + ' '.join(sys.version.split('\n')),
+            'IPython ' + IPython.__version__,
+            'IFEM-Inspect ' + ifem.__version__,
+            'Result file: ' + res.basename,
+        ]) + '\n'
+
+        ipshell = InteractiveShellEmbed(banner1=banner)
+        ipshell(local_ns={}, module=res.namespace())
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except e:
+        print(e)
+        sys.exit(1)

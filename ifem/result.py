@@ -1,16 +1,14 @@
 from collections import namedtuple
 from io import StringIO
 import xml.etree.ElementTree as xml
-
 import h5py
-
-from splipy.io import G2
+from splipy.IO import G2
 
 
 __all__ = ['Result']
 
 
-Field = namedtuple('Field', ['components', 'basis'])
+ResField = namedtuple('ResField', ['components', 'basis'])
 
 
 class G2Object(G2):
@@ -44,13 +42,18 @@ class Basis:
         return self.patches[0].pardim
 
 
+class ResultModule:
+
+    def __init__(self):
+        pass
+
+
 class Result:
 
     def __init__(self, basename):
         self.basename = basename
 
     def __enter__(self):
-        print('hi')
         self.hdf = h5py.File(self.basename + '.hdf5', 'r')
         self.xml = xml.parse(self.basename + '.xml')
 
@@ -60,7 +63,7 @@ class Result:
                 self.ntimes = int(child.text) + 1
             elif child.tag == 'entry':
                 if child.attrib['type'] == 'field':
-                    self.fields[child.attrib['name']] = Field(
+                    self.fields[child.attrib['name']] = ResField(
                         components=int(child.attrib['components']),
                         basis=child.attrib['basis']
                     )
@@ -82,3 +85,7 @@ class Result:
     @property
     def pardim(self):
         return next(iter(self.bases.values())).pardim
+
+    def namespace(self):
+        mod = ResultModule()
+        return mod
